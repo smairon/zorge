@@ -1,61 +1,81 @@
 import inspect
 import typing
+import collections.abc
+import itertools
 
-from .. import contracts
-from .generic import success_shutdown_instance, failure_shutdown_instance
+from .. import contracts, exceptions
+from .generic import shutdown, startup
 
 
 class DependencyProvider(contracts.DependencyProvider):
     def __init__(
         self,
         bindings: contracts.DependencyBingingRegistry,
-        callbacks: contracts.CallbackRegistry,
-        instance_registry: contracts.SingletonInstanceRegistry
+        callbacks: typing.Iterable[contracts.DependencyBindingRecord],
+        literals: typing.Mapping,
+        container_singleton_registry: contracts.SingletonRegistry
     ):
-        self._dependency_registry = bindings
+        self._bindings = bindings
         self._callbacks = callbacks
-        self._global_instance_registry = instance_registry
-        self._local_instance_registry: contracts.SingletonInstanceRegistry = {}
+        self._literals = literals
+        self._container_singleton_registry = container_singleton_registry
+        self._provider_singleton_registry: contracts.SingletonRegistry = {}
 
-    async def resolve(
+    async def get(
         self,
         contract: contracts.DependencyBindingContract,
         context: contracts.ContextType | None = None
     ):
-        context = context or {}
         result = await self._resolve(contract, context=context)
+        if result is contracts.NotDefined:
+            result = None
         return result
 
+    def __getitem__(self, contract: contracts.DependencyBindingContract):
+        return self._get_singleton(contract)
+
     async def __aenter__(self):
+        await self.startup()
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
         await self.shutdown(exc_type)
 
+    def __iter__(self) -> typing.Generator[contracts.DependencyBindingRecord, None, None]:
+        for record in itertools.chain(self._bindings.values(), self._callbacks):
+            yield record
+
     async def shutdown(self, exc_type: typing.Any):
-        for key, callback in self._callbacks.items():
-            _contract, _type = key
-            _desired = contracts.EventType.ON_SHUTDOWN_FAILURE if exc_type else contracts.EventType.ON_SHUTDOWN_SUCCESS
-            if _type == _desired:
-                singleton_instance = self._get_from_registry(
-                    _contract,
-                    filter_by_scope=contracts.DependencyBindingScope.INSTANCE
-                )
-                if exc_type:
-                    await failure_shutdown_instance(callback, singleton_instance, exc_type)
-                else:
-                    await success_shutdown_instance(callback, singleton_instance)
+        await shutdown(self, exc_type, contracts.DependencyBindingScope.INSTANCE)
+
+    async def startup(self):
+        await startup(self)
+
+    def get_registry(
+        self
+    ) -> collections.abc.Mapping[
+        contracts.DependencyBindingContract,
+        contracts.DependencyBindingRecord
+    ]:
+        return self._provider_singleton_registry
 
     async def _resolve(
         self,
         contract: contracts.DependencyBindingContract,
-        context: contracts.ContextType
+        context: contracts.ContextType | None
     ):
-        binding_record = self._dependency_registry.get(contract)
+        binding_record = self._bindings.get(contract)
         if not binding_record:
-            return
+            return contracts.NotDefined
 
-        if result := self._get_from_registry(contract):
+        if (
+            binding_record.binding_type == contracts.DependencyBindingType.SINGLETON and
+            isinstance(context, collections.abc.Mapping) and
+            contract in context
+        ):
+            raise exceptions.CannotPassContextToSingleton(contract=contract)
+
+        if result := self._get_singleton(contract):
             return result
 
         instance = binding_record.instance
@@ -68,37 +88,45 @@ class DependencyProvider(contracts.DependencyProvider):
             init_spec = inspect.getfullargspec(getattr(instance, '__init__'))
             params = {}
             for param_name, param_type in init_spec.annotations.items():
-                if value := context.get((contract, param_name)):
+                value = contracts.NotDefined
+                if isinstance(context, collections.abc.Mapping) and contract in context:
+                    value = context[contract].get(param_name, contracts.NotDefined)
+                if value is contracts.NotDefined and self._literals:
+                    value = self._literals.get(param_name, contracts.NotDefined)
+                if value is contracts.NotDefined:
+                    value = await self._resolve(param_type, context=context)
+                if value is not contracts.NotDefined:
                     params[param_name] = value
-                else:
-                    params[param_name] = await self._resolve(param_type, context=context)
-            result = instance(**params)
+            try:
+                result = instance(**params)
+            except TypeError as e:
+                raise exceptions.CannotResolveParams(contract=contract, message=str(e))
 
-        self._add_to_registry(contract, result)
+        self._register_singleton(contract, result)
 
         return result
 
-    def _get_from_registry(
+    def _get_singleton(
+        self,
+        contract: contracts.DependencyBindingContract
+    ):
+        instance = self._provider_singleton_registry.get(contract)
+        if not instance:
+            instance = self._container_singleton_registry.get(contract)
+        return instance
+
+    def _register_singleton(
         self,
         contract: contracts.DependencyBindingContract,
-        filter_by_scope: contracts.DependencyBindingScope = contracts.DependencyBindingScope.GLOBAL
+        instance: contracts.SingletonInstance
     ):
-        registries = [self._local_instance_registry]
-        if filter_by_scope == contracts.DependencyBindingScope.INSTANCE:
-            registries.append(self._global_instance_registry)
-
-        for registry in registries:
-            if contract in registry:
-                return registry.get(contract)
-
-    def _add_to_registry(self, contract: contracts.DependencyBindingContract, instance: contracts.SingletonInstance):
-        binding_record = self._dependency_registry.get(contract)
+        binding_record = self._bindings.get(contract)
         if not binding_record:
             return
-        if binding_record.type != contracts.DependencyBindingType.SINGLETON:
+        if binding_record.binding_type != contracts.DependencyBindingType.SINGLETON:
             return
 
         if binding_record.scope == contracts.DependencyBindingScope.INSTANCE:
-            self._local_instance_registry[contract] = instance
+            self._provider_singleton_registry[contract] = instance
         else:
-            self._global_instance_registry[contract] = instance
+            self._container_singleton_registry[contract] = instance

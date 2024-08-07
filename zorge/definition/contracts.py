@@ -1,16 +1,27 @@
-import collections.abc
-import typing
 import dataclasses
+import typing
 import enum
+import collections.abc
 
-from .domain import (
-    ImplementationExecutionTrigger,
-    CacheScope,
-    ContractType,
-    ImplementationType
-)
+ContractType: typing.TypeAlias = typing.Any
+ImplementationType: typing.TypeAlias = typing.Any
+CallbackContextType: typing.TypeAlias = collections.abc.Mapping[str, typing.Any]
+CallbackType: typing.TypeAlias = collections.abc.Callable[[ContractType, CallbackContextType], typing.NoReturn]
+InstanceType: typing.TypeAlias = typing.Any
 
-InstanceType = typing.Any
+
+class ImplementationExecutionTrigger(enum.Enum):
+    SHUTDOWN = enum.auto()
+
+
+class CacheScope(enum.Enum):
+    CONTAINER = enum.auto()
+    RESOLVER = enum.auto()
+
+
+class UnitKeyKind(enum.Enum):
+    DEPENDENCY = enum.auto()
+    CALLBACK = enum.auto()
 
 
 class ImplementationKind(enum.Enum):
@@ -23,6 +34,12 @@ class ImplementationKind(enum.Enum):
 class ImplementationExecutionType(enum.Enum):
     SYNC = enum.auto()
     ASYNC = enum.auto()
+
+
+@dataclasses.dataclass(frozen=True)
+class UnitKey:
+    kind: UnitKeyKind
+    contract: ContractType
 
 
 @dataclasses.dataclass
@@ -49,5 +66,5 @@ class ContainerUnit:
     execution_signature: FunctionSignature | None = None
 
 
-ContainerUnitRegistry = collections.abc.MutableMapping[ContractType, ContainerUnit]
-InstanceCacheType = collections.abc.MutableMapping[ContractType, InstanceType]
+ContainerUnitRegistry: typing.TypeAlias = collections.abc.MutableMapping[ContractType, ContainerUnit]
+InstanceCacheType: typing.TypeAlias = collections.abc.MutableMapping[ContractType, InstanceType]

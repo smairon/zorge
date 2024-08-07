@@ -2,49 +2,42 @@ import collections.abc
 import types
 import typing
 
-from .. import contracts
+from ..definition import contracts
+
+ContextType: typing.TypeAlias = collections.abc.Mapping[contracts.ContractType, collections.abc.Mapping]
 
 
 class Resolver:
     def __init__(
         self,
-        unit_registry: contracts.internal.ContainerUnitRegistry,
-        callback_registry: collections.abc.MutableSequence[contracts.internal.ContainerUnit],
-        global_cache: contracts.internal.InstanceCacheType | None = None
+        unit_registry: contracts.ContainerUnitRegistry,
+        cache: contracts.InstanceCacheType | None = None,
+        context: ContextType | None = None
     ):
         self._unit_registry = unit_registry
-        self._callback_registry = callback_registry
-        self._global_cache = global_cache or {}
-        self._local_cache: contracts.internal.InstanceCacheType = {}
-        self._context = None
-
-    def add_context(
-        self,
-        contract: contracts.ContractType,
-        data: collections.abc.Mapping
-    ):
-        self._context = self._context or {contract: data}
+        self._container_cache: contracts.InstanceCacheType = cache if cache is not None else {}
+        self._resolver_cache: contracts.InstanceCacheType = {}
+        self._resolver_context = context or {}
 
     async def resolve(
         self,
         contract: contracts.ContractType,
-        execution_context: collections.abc.Mapping[str, typing.Any] | None = None,
-        initial_context: collections.abc.Mapping[str, typing.Any] | None = None
+        context: ContextType | None = None
     ):
         return await self._resolve(
             contract=contract,
-            execution_context=execution_context,
-            initial_context=initial_context
+            context=context
         )
 
     async def shutdown(self, exc_type, exc_val):
-        for callback_unit in self._callback_registry:
-            if callback_unit.cache_scope is contracts.CacheScope.RESOLVER:
-                instance = self._local_cache.get(callback_unit.contract)
-                if callback_unit.implementation_execution_type is contracts.internal.ImplementationExecutionType.ASYNC:
-                    await callback_unit.implementation(instance, {'exc_type': exc_type, 'exc_val': exc_val})
-                else:
-                    callback_unit.implementation(instance, {'exc_type': exc_type, 'exc_val': exc_val})
+        for unit_key, unit in self._unit_registry.items():
+            if unit_key.kind == contracts.UnitKeyKind.CALLBACK:
+                if unit.cache_scope is contracts.CacheScope.RESOLVER:
+                    instance = self._resolver_cache.get(unit.contract)
+                    if unit.implementation_execution_type is contracts.ImplementationExecutionType.ASYNC:
+                        await unit.implementation(instance, {'exc_type': exc_type, 'exc_val': exc_val})
+                    else:
+                        unit.implementation(instance, {'exc_type': exc_type, 'exc_val': exc_val})
 
     async def __aenter__(self):
         return self
@@ -56,55 +49,57 @@ class Resolver:
         self,
         contract: contracts.ContractType,
         default: typing.Any | None = None,
-        execution_context: collections.abc.Mapping[str, typing.Any] | None = None,
-        initial_context: collections.abc.Mapping[str, typing.Any] | None = None
+        context: ContextType | None = None
     ):
-        if self._context and contract in self._context:
-            return self._context.get(contract)
-        if contract in self._local_cache:
-            return self._local_cache.get(contract)
-        if contract in self._global_cache:
-            return self._global_cache.get(contract)
-        if (unit := self._unit_registry.get(contract)) is None:
+
+        if contract in self._resolver_context:
+            return self._resolver_context.get(contract)
+        if contract in self._resolver_cache:
+            return self._resolver_cache.get(contract)
+        if contract in self._container_cache:
+            return self._container_cache.get(contract)
+        if (
+            unit := self._unit_registry.get(
+                contracts.UnitKey(
+                    contract=contract,
+                    kind=contracts.UnitKeyKind.DEPENDENCY)
+            )
+        ) is None:
             return default
 
+        context = context or {}
         result = None
-        if unit.implementation_kind is contracts.internal.ImplementationKind.STATIC:
+        if unit.implementation_kind is contracts.ImplementationKind.STATIC:
             result = unit.implementation
-        elif unit.implementation_kind is contracts.internal.ImplementationKind.CLASS:
+        elif unit.implementation_kind is contracts.ImplementationKind.CLASS:
             params = {
-                k: await self._apply_context_value(k, v, initial_context)
+                k: context.get(k) or await self._apply_context_value(v)
                 for k, v in unit.init_signature.parameters.items()
                 if k not in ('args', 'kwargs')
             } if unit.init_signature else {}
             result = unit.implementation(**params)
-        elif unit.implementation_kind is contracts.internal.ImplementationKind.CALLABLE:
+        elif unit.implementation_kind is contracts.ImplementationKind.CALLABLE:
             params = {
-                k: await self._apply_context_value(k, v, execution_context)
+                k: context.get(k) or await self._apply_context_value(v)
                 for k, v in unit.execution_signature.parameters.items()
             } if unit.execution_signature else {}
-            if unit.implementation_execution_type is contracts.internal.ImplementationExecutionType.ASYNC:
+            if unit.implementation_execution_type is contracts.ImplementationExecutionType.ASYNC:
                 result = await unit.implementation(**params)
             else:
                 result = unit.implementation(**params)
 
         if result is not None:
             if unit.cache_scope is contracts.CacheScope.RESOLVER:
-                self._local_cache[contract] = result
+                self._resolver_cache[contract] = result
             elif unit.cache_scope is contracts.CacheScope.CONTAINER:
-                self._global_cache[contract] = result
+                self._container_cache[contract] = result
 
         return result
 
     async def _apply_context_value(
         self,
-        key: str,
-        value: contracts.internal.FunctionParameter,
-        context: collections.abc.Mapping[str, typing.Any]
+        value: contracts.FunctionParameter,
     ):
-        if context and key in context:
-            return context.get(key)
-
         args = list(filter(lambda x: x is not types.NoneType, typing.get_args(value.type)))
         if len(args) > 1:
             raise Exception("Cannot resolve more than 1 contract")

@@ -19,11 +19,11 @@ class Container:
         cache_scope: typing.Literal['container', 'resolver'] | None = None,
     ):
         if cache_scope == 'container':
-            cache_scope = contracts.CacheScope.CONTAINER
+            _cache_scope = contracts.CacheScope.CONTAINER
         elif cache_scope == 'resolver':
-            cache_scope = contracts.CacheScope.RESOLVER
+            _cache_scope = contracts.CacheScope.RESOLVER
         else:
-            cache_scope = None
+            _cache_scope = None
         contract = self._derive_implementation_contract(implementation, contract)
         implementation_kind = self._derive_implementation_kind(implementation)
         implementation_execution_type = self._derive_implementation_execution_type(implementation)
@@ -43,7 +43,7 @@ class Container:
             implementation=implementation,
             implementation_kind=implementation_kind,
             implementation_execution_type=implementation_execution_type,
-            cache_scope=cache_scope,
+            cache_scope=_cache_scope,
             init_signature=init_signature,
             execution_signature=execution_signature
         )
@@ -55,7 +55,7 @@ class Container:
         trigger: typing.Literal['shutdown'] = 'shutdown',
     ):
         if trigger == 'shutdown':
-            trigger = contracts.ImplementationExecutionTrigger.SHUTDOWN
+            _trigger = contracts.ImplementationExecutionTrigger.SHUTDOWN
         else:
             raise exceptions.UnsupportedTrigger(contract, trigger)
 
@@ -63,41 +63,60 @@ class Container:
             callback if inspect.isfunction(callback) else getattr(callback, '__call__')
         )
 
-        unit_key = contracts.UnitKey(
-            contract=contract,
-            kind=contracts.UnitKeyKind.CALLBACK
+        dependency_unit = self._unit_registry.get(
+            contracts.UnitKey(
+                contract=contract,
+                kind=contracts.UnitKeyKind.DEPENDENCY
+            )
         )
-        self._unit_registry[unit_key] = (
+
+        self._unit_registry[
+            contracts.UnitKey(
+                contract=contract,
+                kind=contracts.UnitKeyKind.CALLBACK
+            )
+        ] = (
             contracts.ContainerUnit(
                 contract=contract,
                 implementation=callback,
                 implementation_kind=contracts.ImplementationKind.CALLBACK,
                 implementation_execution_type=self._derive_implementation_execution_type(callback),
-                implementation_execution_trigger=trigger,
-                cache_scope=self._unit_registry.get(
-                    contracts.UnitKey(
-                        contract=contract,
-                        kind=contracts.UnitKeyKind.DEPENDENCY
-                    )
-                ).cache_scope,
+                implementation_execution_trigger=_trigger,
+                cache_scope=dependency_unit.cache_scope if dependency_unit else None,
                 execution_signature=execution_signature
             )
         )
 
-    def get_resolver(self) -> resolver.Resolver:
+    def get_resolver(
+        self,
+        *context: typing.Any,
+    ) -> resolver.Resolver:
+        _context = {}
+
+        for element in context:
+            if isinstance(element, collections.abc.Sequence):
+                raise TypeError(f'Unsupported context type: {type(element)}. Use positional arguments instead')
+            elif isinstance(element, collections.abc.Mapping):
+                _context |= element
+            else:
+                _context[type(element)] = element
+
         return resolver.Resolver(
             unit_registry=self._unit_registry,
-            cache=self._cache
+            cache=self._cache,
+            context=_context or None
         )
 
-    async def shutdown(self, exc_type: typing.Any | None = None):
+    async def shutdown(self, context: contracts.ShutdownContextType):
         pass
 
     async def __aenter__(self):
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.shutdown(exc_type)
+        await self.shutdown(
+            context={'exc_type': exc_type, 'exc_val': exc_val, 'exc_tb': exc_tb}
+        )
 
     def __iter__(self) -> collections.abc.Iterator[contracts.ContainerUnit]:
         for unit in self._unit_registry.values():
@@ -118,7 +137,7 @@ class Container:
     def _derive_implementation_contract(
         implementation: contracts.ImplementationType,
         contract: contracts.ContractType | None = None
-    ):
+    ) -> contracts.ContractType:
         if contract is None:
             if inspect.isfunction(implementation):
                 signature = inspect.signature(implementation)
@@ -142,6 +161,7 @@ class Container:
         return contracts.FunctionSignature(
             parameters={
                 param_name: contracts.FunctionParameter(
+                    name=param_name,
                     type=param_type.annotation,
                     default=None if param_type.default is inspect.Parameter.empty else param_type.default
                 )

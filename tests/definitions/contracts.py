@@ -1,6 +1,19 @@
+import dataclasses
 import typing
 
 DBEngineContract = typing.NewType('DBEngineContract', object)
+PoolSizeContract = typing.NewType('PoolSizeContract', int)
+
+class UserActorContract(typing.Protocol):
+    def get_id(self) -> int: ...
+
+
+class PostActorContract(typing.Protocol):
+    def get_id(self) -> int: ...
+
+
+class UserServiceContract(typing.Protocol):
+    def get_ids(self) -> list[int]: ...
 
 
 class DBConnectionContract(typing.Protocol):
@@ -21,3 +34,8 @@ class PostsRepositoryContract(RepositoryContract):
 
 class UnitOfWorkContract:
     def do(self) -> tuple[str, str]: ...
+
+
+@dataclasses.dataclass
+class UserContextContract:
+    user_id: int

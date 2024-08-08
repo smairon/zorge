@@ -3,10 +3,12 @@ import typing
 import enum
 import collections.abc
 
-ContractType: typing.TypeAlias = typing.Any
+ContractType: typing.TypeAlias = type
 ImplementationType: typing.TypeAlias = typing.Any
+ResolverContextType: typing.TypeAlias = collections.abc.Mapping[str | ContractType, typing.Any]
 CallbackContextType: typing.TypeAlias = collections.abc.Mapping[str, typing.Any]
-CallbackType: typing.TypeAlias = collections.abc.Callable[[ContractType, CallbackContextType], typing.NoReturn]
+ShutdownContextType: typing.TypeAlias = collections.abc.Mapping[str, typing.Any]
+CallbackType: typing.TypeAlias = collections.abc.Callable[[ImplementationType, CallbackContextType], typing.NoReturn]
 InstanceType: typing.TypeAlias = typing.Any
 
 
@@ -39,11 +41,12 @@ class ImplementationExecutionType(enum.Enum):
 @dataclasses.dataclass(frozen=True)
 class UnitKey:
     kind: UnitKeyKind
-    contract: ContractType
+    contract: ContractType | None
 
 
 @dataclasses.dataclass
 class FunctionParameter:
+    name: str
     type: type
     default: typing.Any | None
 
@@ -66,5 +69,5 @@ class ContainerUnit:
     execution_signature: FunctionSignature | None = None
 
 
-ContainerUnitRegistry: typing.TypeAlias = collections.abc.MutableMapping[ContractType, ContainerUnit]
+ContainerUnitRegistry: typing.TypeAlias = collections.abc.MutableMapping[UnitKey, ContainerUnit]
 InstanceCacheType: typing.TypeAlias = collections.abc.MutableMapping[ContractType, InstanceType]

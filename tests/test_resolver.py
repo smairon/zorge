@@ -107,3 +107,29 @@ async def test_callback(container: zorge.Container):
         connection = await resolver.resolve(contracts.DBConnectionContract)
 
     assert connection.sentinel == sentinel
+
+
+@pytest.mark.asyncio
+async def test_resolver_context(container: zorge.Container):
+    container.register_dependency(
+        contract=contracts.UserActorContract,
+        implementation=implementations.UserActor,
+        cache_scope='resolver'
+    )
+    container.register_dependency(
+        contract=contracts.PostActorContract,
+        implementation=implementations.PostActor,
+        cache_scope='resolver'
+    )
+    container.register_dependency(
+        contract=contracts.UserServiceContract,
+        implementation=implementations.UserService,
+        cache_scope='resolver'
+    )
+
+    async with container.get_resolver(
+        contracts.UserContextContract(user_id=1),
+        {contracts.PoolSizeContract: 1}
+    ) as resolver:
+        service = await resolver.resolve(contracts.UserServiceContract)
+        assert service.get_ids() == [1, 1, 1]

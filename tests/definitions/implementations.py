@@ -6,7 +6,11 @@ from .contracts import (
     DBEngineContract,
     DBConnectionContract,
     UsersRepositoryContract,
-    PostsRepositoryContract
+    PostsRepositoryContract,
+    UserActorContract,
+    PostActorContract,
+    UserContextContract,
+    PoolSizeContract
 )
 
 
@@ -62,3 +66,35 @@ class UnitOfWork:
 
     def do(self) -> tuple[str, str]:
         return self._users_repo.do(), self._posts_repo.do()
+
+
+class UserActor:
+    def __init__(self, user_context: UserContextContract):
+        self.user_context = user_context
+
+    def get_id(self) -> int:
+        return self.user_context.user_id
+
+
+class PostActor:
+    def __init__(self, user_context: UserContextContract):
+        self.user_context = user_context
+
+    def get_id(self):
+        if self.user_context.user_id == 1:
+            return 1
+
+
+class UserService:
+    def __init__(
+        self,
+        user_actor: UserActorContract,
+        post_actor: PostActorContract,
+        pool_size: PoolSizeContract
+    ):
+        self.user_id = user_actor.get_id()
+        self.post_id = post_actor.get_id()
+        self.pool_size = pool_size
+
+    def get_ids(self) -> list[int]:
+        return [self.user_id, self.post_id, self.pool_size]

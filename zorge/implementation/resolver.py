@@ -1,10 +1,7 @@
-import collections.abc
 import types
 import typing
 
 from ..definition import contracts
-
-ContextType: typing.TypeAlias = collections.abc.Mapping[contracts.ContractType, collections.abc.Mapping]
 
 
 class Resolver:
@@ -12,7 +9,7 @@ class Resolver:
         self,
         unit_registry: contracts.ContainerUnitRegistry,
         cache: contracts.InstanceCacheType | None = None,
-        context: ContextType | None = None
+        context: contracts.ResolverContextType | None = None
     ):
         self._unit_registry = unit_registry
         self._container_cache: contracts.InstanceCacheType = cache if cache is not None else {}
@@ -22,34 +19,39 @@ class Resolver:
     async def resolve(
         self,
         contract: contracts.ContractType,
-        context: ContextType | None = None
+        context: contracts.ResolverContextType | None = None
     ):
         return await self._resolve(
             contract=contract,
             context=context
         )
 
-    async def shutdown(self, exc_type, exc_val):
+    async def shutdown(
+        self,
+        context: contracts.ShutdownContextType | None = None
+    ):
         for unit_key, unit in self._unit_registry.items():
             if unit_key.kind == contracts.UnitKeyKind.CALLBACK:
                 if unit.cache_scope is contracts.CacheScope.RESOLVER:
                     instance = self._resolver_cache.get(unit.contract)
                     if unit.implementation_execution_type is contracts.ImplementationExecutionType.ASYNC:
-                        await unit.implementation(instance, {'exc_type': exc_type, 'exc_val': exc_val})
+                        await unit.implementation(instance, context)
                     else:
-                        unit.implementation(instance, {'exc_type': exc_type, 'exc_val': exc_val})
+                        unit.implementation(instance, context)
 
     async def __aenter__(self):
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.shutdown(exc_type, exc_val)
+        await self.shutdown(
+            context={'exc_type': exc_type, 'exc_val': exc_val, 'exc_tb': exc_tb}
+        )
 
     async def _resolve(
         self,
         contract: contracts.ContractType,
         default: typing.Any | None = None,
-        context: ContextType | None = None
+        context: contracts.ResolverContextType | None = None
     ):
 
         if contract in self._resolver_context:
@@ -73,15 +75,15 @@ class Resolver:
             result = unit.implementation
         elif unit.implementation_kind is contracts.ImplementationKind.CLASS:
             params = {
-                k: context.get(k) or await self._apply_context_value(v)
-                for k, v in unit.init_signature.parameters.items()
-                if k not in ('args', 'kwargs')
+                parameter.name: await self._apply_context_parameter(parameter, context)
+                for parameter in unit.init_signature.parameters.values()
+                if parameter.name not in ('args', 'kwargs')
             } if unit.init_signature else {}
             result = unit.implementation(**params)
         elif unit.implementation_kind is contracts.ImplementationKind.CALLABLE:
             params = {
-                k: context.get(k) or await self._apply_context_value(v)
-                for k, v in unit.execution_signature.parameters.items()
+                parameter.name: await self._apply_context_parameter(parameter, context)
+                for parameter in unit.execution_signature.parameters.values()
             } if unit.execution_signature else {}
             if unit.implementation_execution_type is contracts.ImplementationExecutionType.ASYNC:
                 result = await unit.implementation(**params)
@@ -96,16 +98,22 @@ class Resolver:
 
         return result
 
-    async def _apply_context_value(
+    async def _apply_context_parameter(
         self,
-        value: contracts.FunctionParameter,
+        parameter: contracts.FunctionParameter,
+        context: contracts.ResolverContextType
     ):
-        args = list(filter(lambda x: x is not types.NoneType, typing.get_args(value.type)))
+        args = list(filter(lambda x: x is not types.NoneType, typing.get_args(parameter.type)))
         if len(args) > 1:
             raise Exception("Cannot resolve more than 1 contract")
         elif len(args) == 1:
             _type = args[0]
         else:
-            _type = value.type
+            _type = parameter.type
 
-        return await self._resolve(_type, value.default)
+        if _type in context:
+            return context.get(_type)
+        elif parameter.name in context:
+            return context.get(parameter.name)
+        else:
+            return await self._resolve(_type, parameter.default)

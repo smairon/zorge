@@ -91,13 +91,13 @@ class Container:
         self,
         *context: typing.Any,
     ) -> resolver.Resolver:
-        _context = {}
+        _context: collections.abc.MutableMapping = {}
 
         for element in context:
             if isinstance(element, collections.abc.Sequence):
                 raise TypeError(f'Unsupported context type: {type(element)}. Use positional arguments instead')
             elif isinstance(element, collections.abc.Mapping):
-                _context |= element
+                _context.update(element)
             else:
                 _context[type(element)] = element
 

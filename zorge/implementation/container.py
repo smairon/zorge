@@ -108,7 +108,16 @@ class Container:
         )
 
     async def shutdown(self, context: contracts.ShutdownContextType):
-        pass
+        for unit_key, unit in self._unit_registry.items():
+            if unit_key.kind == contracts.UnitKeyKind.CALLBACK:
+                if unit.cache_scope is contracts.CacheScope.CONTAINER:
+                    instance = self._cache.get(unit.contract)
+                    if instance is None:
+                        continue
+                    if unit.implementation_execution_type is contracts.ImplementationExecutionType.ASYNC:
+                        await unit.implementation(instance, context)
+                    else:
+                        unit.implementation(instance, context)
 
     async def __aenter__(self):
         return self

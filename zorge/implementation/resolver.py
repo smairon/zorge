@@ -34,6 +34,8 @@ class Resolver:
             if unit_key.kind == contracts.UnitKeyKind.CALLBACK:
                 if unit.cache_scope is contracts.CacheScope.RESOLVER:
                     instance = self._resolver_cache.get(unit.contract)
+                    if instance is None:
+                        continue
                     if unit.implementation_execution_type is contracts.ImplementationExecutionType.ASYNC:
                         await unit.implementation(instance, context)
                     else:
